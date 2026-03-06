@@ -6,8 +6,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/ultraviolet/screen"
+	uv "github.com/dcostap/ultraviolet"
+	"github.com/dcostap/ultraviolet/screen"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )

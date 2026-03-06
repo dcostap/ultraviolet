@@ -2,11 +2,11 @@ module examples
 
 go 1.24.2
 
-replace github.com/charmbracelet/ultraviolet => ../
+replace github.com/dcostap/ultraviolet => ../
 
 require (
 	charm.land/lipgloss/v2 v2.0.0-beta.3.0.20251106193318-19329a3e8410
-	github.com/charmbracelet/ultraviolet v0.0.0-20251106190538-99ea45596692
+	github.com/dcostap/ultraviolet v0.0.0-20251106190538-99ea45596692
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/mosaic v0.0.0-20250509021451-13796e822d86
 	github.com/charmbracelet/x/term v0.2.2

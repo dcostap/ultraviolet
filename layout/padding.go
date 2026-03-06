@@ -1,6 +1,6 @@
 package layout
 
-import uv "github.com/charmbracelet/ultraviolet"
+import uv "github.com/dcostap/ultraviolet"
 
 // Padding defines the inset applied to a [Layout]'s outer area before solving.
 type Padding struct {

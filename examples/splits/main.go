@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/ultraviolet/layout"
-	"github.com/charmbracelet/ultraviolet/screen"
+	uv "github.com/dcostap/ultraviolet"
+	"github.com/dcostap/ultraviolet/layout"
+	"github.com/dcostap/ultraviolet/screen"
 	"github.com/charmbracelet/x/ansi"
 )
 

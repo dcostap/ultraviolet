@@ -3,8 +3,8 @@
 <img width="400" alt="Charm Ultraviolet" src="https://github.com/user-attachments/assets/3484e4b0-3741-4e8c-bebf-9ea51f5bb49c" />
 
 <p>
-    <a href="https://pkg.go.dev/github.com/charmbracelet/ultraviolet?tab=doc"><img src="https://godoc.org/github.com/charmbracelet/ultraviolet?status.svg" alt="GoDoc"></a>
-    <a href="https://github.com/charmbracelet/ultraviolet/actions"><img src="https://github.com/charmbracelet/ultraviolet/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
+    <a href="https://pkg.go.dev/github.com/dcostap/ultraviolet?tab=doc"><img src="https://godoc.org/github.com/dcostap/ultraviolet?status.svg" alt="GoDoc"></a>
+    <a href="https://github.com/dcostap/ultraviolet/actions"><img src="https://github.com/dcostap/ultraviolet/actions/workflows/build.yml/badge.svg" alt="Build Status"></a>
 </p>
 
 Ultraviolet is a set of primitives for manipulating terminal emulators, with a focus on terminal user interfaces (TUIs). It provides a set of tools and abstractions for interaction that can handle user input and display dynamic, cell-based content. It’s the product of many years of research, development, collaboration and ingenuity.

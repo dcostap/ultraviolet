@@ -5,7 +5,7 @@ import (
 	"image/color"
 	"strings"
 
-	uv "github.com/charmbracelet/ultraviolet"
+	uv "github.com/dcostap/ultraviolet"
 	"github.com/clipperhouse/uax29/v2/graphemes"
 )
 

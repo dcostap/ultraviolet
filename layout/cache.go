@@ -3,8 +3,8 @@ package layout
 import (
 	"sync"
 
-	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/ultraviolet/internal/lru"
+	uv "github.com/dcostap/ultraviolet"
+	"github.com/dcostap/ultraviolet/internal/lru"
 )
 
 // globalCacheSize is chosen to comfortably hold one entry per row and column
