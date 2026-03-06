@@ -208,6 +208,26 @@ func TestDeviceAttributesParsing(t *testing.T) {
 	})
 }
 
+func TestParseWin32InputKeyEventShiftEnter(t *testing.T) {
+	var p EventDecoder
+
+	got := p.parseWin32InputKeyEvent(
+		xwindows.VK_RETURN,
+		0,
+		'\r',
+		true,
+		xwindows.SHIFT_PRESSED,
+		1,
+	)
+	key, ok := got.(KeyPressEvent)
+	if !ok {
+		t.Fatalf("expected KeyPressEvent, got %T", got)
+	}
+	if !key.MatchString("shift+enter") {
+		t.Fatalf("expected shift+enter, got %q", key.String())
+	}
+}
+
 // TestHelperFunctions tests various helper functions
 func TestHelperFunctions(t *testing.T) {
 	// Test shift

@@ -50,7 +50,8 @@ func NewCancelReader(r io.Reader) (cancelreader.CancelReader, error) {
 	}
 
 	modes := []uint32{
-		windows.ENABLE_VIRTUAL_TERMINAL_INPUT,
+		// Keep Win32 input mode enabled so modifier state for keys like
+		// Shift+Enter survives on Windows Terminal / ConPTY.
 		windows.ENABLE_WINDOW_INPUT,
 		windows.ENABLE_EXTENDED_FLAGS,
 	}
