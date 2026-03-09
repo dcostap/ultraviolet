@@ -17,6 +17,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const (
+	win32BracketedPasteStart     = "\x1b[200~"
+	win32BracketedPasteEnd       = "\x1b[201~"
+	win32PasteRuneThreshold      = 24
+	win32PasteMultilineThreshold = 8
+)
+
 // streamData sends data from the input stream to the event channel.
 func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) error {
 	cc, ok := d.r.(*conInputReader)
@@ -76,36 +83,36 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 // be present in the input buffer. The resulting byte slice can be sent to the
 // terminal as input.
 func (d *TerminalReader) serializeWin32InputRecords(records []xwindows.InputRecord, buf *bytes.Buffer) {
-	for _, record := range records {
+	for i := 0; i < len(records); i++ {
+		record := records[i]
 		switch record.EventType {
 		case xwindows.KEY_EVENT:
 			kevent := record.KeyEvent()
 			// d.logf("key event: %s", keyEventString(kevent.VirtualKeyCode, kevent.VirtualScanCode, kevent.Char, kevent.KeyDown, kevent.ControlKeyState, kevent.RepeatCount))
 
-			var kd int
-			if kevent.KeyDown {
-				kd = 1
-			}
-			if d.vtInput { //nolint:nestif
-				// In VT Input Mode, we only capture the Unicode characters
-				// decoding them along the way.
-				// This is similar to [TerminalReader.storeGraphemeRune] except
-				// that we need to write the events directly to the buffer.
-				if d.utf16Half[kd] {
-					// We have a half pair that needs to be decoded.
-					d.utf16Half[kd] = false
-					d.utf16Buf[kd][1] = kevent.Char
-					r := utf16.DecodeRune(d.utf16Buf[kd][0], d.utf16Buf[kd][1])
-					buf.WriteRune(r)
-				} else if utf16.IsSurrogate(kevent.Char) {
-					// This is the first half of a UTF-16 surrogate pair.
-					d.utf16Half[kd] = true
-					d.utf16Buf[kd][0] = kevent.Char
-				} else if kevent.KeyDown {
-					// Just a regular key press character encoded in VT.
-					buf.WriteRune(kevent.Char)
+			if d.vtInput {
+				if d.shouldIgnoreWin32VTTextEvent(kevent) {
+					continue
+				}
+				if d.isWin32VTTextEvent(kevent) {
+					consumed, text, runeCount, hasNewline := d.consumeWin32VTTextRun(records[i:])
+					if consumed > 0 {
+						if shouldCoalesceWin32Paste(runeCount, hasNewline) {
+							buf.WriteString(win32BracketedPasteStart)
+							buf.WriteString(text)
+							buf.WriteString(win32BracketedPasteEnd)
+						} else {
+							buf.WriteString(text)
+						}
+						i += consumed - 1
+					}
+					continue
 				}
 			} else {
+				var kd int
+				if kevent.KeyDown {
+					kd = 1
+				}
 				// We encode the key to Win32 Input Mode if it is a known key.
 				if kevent.VirtualKeyCode == 0 {
 					d.eventScanner.storeGraphemeRune(kd, kevent.Char)
@@ -201,6 +208,88 @@ func (d *TerminalReader) serializeWin32InputRecords(records []xwindows.InputReco
 
 	// Flush any remaining grapheme buffers.
 	buf.Write(d.eventScanner.encodeGraphemeBufs())
+}
+
+func shouldCoalesceWin32Paste(runeCount int, hasNewline bool) bool {
+	if runeCount >= win32PasteRuneThreshold {
+		return true
+	}
+	return hasNewline && runeCount >= win32PasteMultilineThreshold
+}
+
+func (d *TerminalReader) consumeWin32VTTextRun(records []xwindows.InputRecord) (consumed int, text string, runeCount int, hasNewline bool) {
+	var run strings.Builder
+
+	for consumed < len(records) {
+		record := records[consumed]
+		if record.EventType != xwindows.KEY_EVENT {
+			break
+		}
+
+		kevent := record.KeyEvent()
+		if d.shouldIgnoreWin32VTTextEvent(kevent) {
+			consumed++
+			continue
+		}
+		if !d.isWin32VTTextEvent(kevent) {
+			break
+		}
+
+		if d.appendWin32VTTextEvent(kevent, &run) {
+			runeCount++
+			hasNewline = hasNewline || kevent.Char == '\r' || kevent.Char == '\n'
+		}
+		consumed++
+	}
+
+	return consumed, run.String(), runeCount, hasNewline
+}
+
+func (d *TerminalReader) appendWin32VTTextEvent(kevent xwindows.KeyEventRecord, buf *strings.Builder) bool {
+	if d.utf16Half[1] {
+		d.utf16Half[1] = false
+		d.utf16Buf[1][1] = kevent.Char
+		buf.WriteRune(utf16.DecodeRune(d.utf16Buf[1][0], d.utf16Buf[1][1]))
+		return true
+	}
+	if utf16.IsSurrogate(kevent.Char) {
+		d.utf16Half[1] = true
+		d.utf16Buf[1][0] = kevent.Char
+		return false
+	}
+	if !kevent.KeyDown {
+		return false
+	}
+	buf.WriteRune(kevent.Char)
+	return true
+}
+
+func (d *TerminalReader) isWin32VTTextEvent(kevent xwindows.KeyEventRecord) bool {
+	if d.utf16Half[1] {
+		return true
+	}
+	if !kevent.KeyDown {
+		return false
+	}
+	return kevent.Char != 0
+}
+
+func (d *TerminalReader) shouldIgnoreWin32VTTextEvent(kevent xwindows.KeyEventRecord) bool {
+	if !kevent.KeyDown {
+		return true
+	}
+	if kevent.Char != 0 {
+		return false
+	}
+	switch kevent.VirtualKeyCode {
+	case windows.VK_SHIFT, windows.VK_CONTROL, windows.VK_MENU,
+		windows.VK_LSHIFT, windows.VK_RSHIFT,
+		windows.VK_LCONTROL, windows.VK_RCONTROL,
+		windows.VK_LMENU, windows.VK_RMENU:
+		return true
+	default:
+		return false
+	}
 }
 
 func mouseEventButton(p, s uint32) (MouseButton, bool) {
