@@ -20,6 +20,7 @@ import (
 const (
 	win32BracketedPasteStart     = "\x1b[200~"
 	win32BracketedPasteEnd       = "\x1b[201~"
+	win32PasteCoalesceWindow     = 5 * time.Millisecond
 	win32PasteRuneThreshold      = 24
 	win32PasteMultilineThreshold = 8
 )
@@ -51,8 +52,16 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 				break
 			}
 
+			if d.hasPendingWin32VTText() && time.Now().After(d.win32VTTextDeadline) {
+				d.flushPendingWin32VTText(&buf)
+				if err := sendWin32SerializedInput(ctx, readc, &buf); err != nil {
+					return err
+				}
+				continue
+			}
+
 			// Sleep for a bit to avoid busy waiting.
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(d.win32InputPollDelay())
 		}
 
 		records, err = readNConsoleInputs(cc.conin, uint32(len(records))) //nolint:gosec
@@ -68,13 +77,9 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 		// Win32-Input-Mode processing.
 		d.serializeWin32InputRecords(records, &buf)
 
-		select {
-		case <-ctx.Done():
-			return nil
-		case readc <- buf.Bytes():
+		if err := sendWin32SerializedInput(ctx, readc, &buf); err != nil {
+			return err
 		}
-
-		buf.Reset()
 	}
 }
 
@@ -83,8 +88,11 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 // be present in the input buffer. The resulting byte slice can be sent to the
 // terminal as input.
 func (d *TerminalReader) serializeWin32InputRecords(records []xwindows.InputRecord, buf *bytes.Buffer) {
-	for i := 0; i < len(records); i++ {
-		record := records[i]
+	for _, record := range records {
+		if d.vtInput && record.EventType != xwindows.KEY_EVENT {
+			d.flushPendingWin32VTText(buf)
+		}
+
 		switch record.EventType {
 		case xwindows.KEY_EVENT:
 			kevent := record.KeyEvent()
@@ -95,19 +103,10 @@ func (d *TerminalReader) serializeWin32InputRecords(records []xwindows.InputReco
 					continue
 				}
 				if d.isWin32VTTextEvent(kevent) {
-					consumed, text, runeCount, hasNewline := d.consumeWin32VTTextRun(records[i:])
-					if consumed > 0 {
-						if shouldCoalesceWin32Paste(runeCount, hasNewline) {
-							buf.WriteString(win32BracketedPasteStart)
-							buf.WriteString(text)
-							buf.WriteString(win32BracketedPasteEnd)
-						} else {
-							buf.WriteString(text)
-						}
-						i += consumed - 1
-					}
+					d.appendPendingWin32VTTextEvent(kevent)
 					continue
 				}
+				d.flushPendingWin32VTText(buf)
 			} else {
 				var kd int
 				if kevent.KeyDown {
@@ -217,32 +216,14 @@ func shouldCoalesceWin32Paste(runeCount int, hasNewline bool) bool {
 	return hasNewline && runeCount >= win32PasteMultilineThreshold
 }
 
-func (d *TerminalReader) consumeWin32VTTextRun(records []xwindows.InputRecord) (consumed int, text string, runeCount int, hasNewline bool) {
-	var run strings.Builder
+func (d *TerminalReader) appendPendingWin32VTTextEvent(kevent xwindows.KeyEventRecord) {
+	d.win32VTTextActive = true
+	d.win32VTTextDeadline = time.Now().Add(win32PasteCoalesceWindow)
 
-	for consumed < len(records) {
-		record := records[consumed]
-		if record.EventType != xwindows.KEY_EVENT {
-			break
-		}
-
-		kevent := record.KeyEvent()
-		if d.shouldIgnoreWin32VTTextEvent(kevent) {
-			consumed++
-			continue
-		}
-		if !d.isWin32VTTextEvent(kevent) {
-			break
-		}
-
-		if d.appendWin32VTTextEvent(kevent, &run) {
-			runeCount++
-			hasNewline = hasNewline || kevent.Char == '\r' || kevent.Char == '\n'
-		}
-		consumed++
+	if d.appendWin32VTTextEvent(kevent, &d.win32VTText) {
+		d.win32VTTextRunes++
+		d.win32VTTextHasNewline = d.win32VTTextHasNewline || kevent.Char == '\r' || kevent.Char == '\n'
 	}
-
-	return consumed, run.String(), runeCount, hasNewline
 }
 
 func (d *TerminalReader) appendWin32VTTextEvent(kevent xwindows.KeyEventRecord, buf *strings.Builder) bool {
@@ -262,6 +243,63 @@ func (d *TerminalReader) appendWin32VTTextEvent(kevent xwindows.KeyEventRecord, 
 	}
 	buf.WriteRune(kevent.Char)
 	return true
+}
+
+func (d *TerminalReader) flushPendingWin32VTText(buf *bytes.Buffer) {
+	if !d.win32VTTextActive {
+		return
+	}
+	if d.utf16Half[1] && d.win32VTText.Len() == 0 {
+		return
+	}
+
+	text := d.win32VTText.String()
+	if shouldCoalesceWin32Paste(d.win32VTTextRunes, d.win32VTTextHasNewline) {
+		buf.WriteString(win32BracketedPasteStart)
+		buf.WriteString(text)
+		buf.WriteString(win32BracketedPasteEnd)
+	} else {
+		buf.WriteString(text)
+	}
+
+	d.win32VTText.Reset()
+	d.win32VTTextActive = false
+	d.win32VTTextRunes = 0
+	d.win32VTTextHasNewline = false
+}
+
+func (d *TerminalReader) hasPendingWin32VTText() bool {
+	return d.win32VTTextActive
+}
+
+func (d *TerminalReader) win32InputPollDelay() time.Duration {
+	if !d.hasPendingWin32VTText() {
+		return 10 * time.Millisecond
+	}
+
+	remaining := time.Until(d.win32VTTextDeadline)
+	if remaining <= 0 {
+		return 0
+	}
+	if remaining > time.Millisecond {
+		return time.Millisecond
+	}
+	return remaining
+}
+
+func sendWin32SerializedInput(ctx context.Context, readc chan []byte, buf *bytes.Buffer) error {
+	if buf.Len() == 0 {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case readc <- buf.Bytes():
+	}
+
+	buf.Reset()
+	return nil
 }
 
 func (d *TerminalReader) isWin32VTTextEvent(kevent xwindows.KeyEventRecord) bool {

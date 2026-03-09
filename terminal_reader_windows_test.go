@@ -23,6 +23,7 @@ func TestSerializeWin32InputRecordsCoalescesMultilinePaste(t *testing.T) {
 
 	var buf bytes.Buffer
 	drv.serializeWin32InputRecords(records, &buf)
+	drv.flushPendingWin32VTText(&buf)
 
 	_, events := drv.eventScanner.scanEvents(buf.Bytes(), true)
 	want := []Event{
@@ -42,6 +43,7 @@ func TestSerializeWin32InputRecordsLeavesSmallTextAsKeyPresses(t *testing.T) {
 
 	var buf bytes.Buffer
 	drv.serializeWin32InputRecords(win32TextRecords("hello"), &buf)
+	drv.flushPendingWin32VTText(&buf)
 
 	_, events := drv.eventScanner.scanEvents(buf.Bytes(), true)
 	want := []Event{
@@ -65,10 +67,36 @@ func TestSerializeWin32InputRecordsPreservesAltGrText(t *testing.T) {
 	drv.serializeWin32InputRecords([]xwindows.InputRecord{
 		win32KeyRecord('€', true, 0, xwindows.LEFT_CTRL_PRESSED|xwindows.RIGHT_ALT_PRESSED),
 	}, &buf)
+	drv.flushPendingWin32VTText(&buf)
 
 	_, events := drv.eventScanner.scanEvents(buf.Bytes(), true)
 	want := []Event{
 		KeyPressEvent{Code: '€', Text: "€"},
+	}
+
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("unexpected events:\nwant: %#v\ngot:  %#v", want, events)
+	}
+}
+
+func TestSerializeWin32InputRecordsCoalescesAcrossCalls(t *testing.T) {
+	drv := NewTerminalReader(bytes.NewReader(nil), "xterm-256color")
+	drv.vtInput = true
+
+	var buf bytes.Buffer
+	drv.serializeWin32InputRecords(win32TextRecords("first line\rsecond"), &buf)
+	if buf.Len() != 0 {
+		t.Fatalf("expected cross-call text to stay pending, got %q", buf.String())
+	}
+
+	drv.serializeWin32InputRecords(win32TextRecords(" line"), &buf)
+	drv.flushPendingWin32VTText(&buf)
+
+	_, events := drv.eventScanner.scanEvents(buf.Bytes(), true)
+	want := []Event{
+		PasteStartEvent{},
+		PasteEvent{"first line\rsecond line"},
+		PasteEndEvent{},
 	}
 
 	if !reflect.DeepEqual(events, want) {
