@@ -17,16 +17,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const (
-	win32BracketedPasteStart     = "\x1b[200~"
-	win32BracketedPasteEnd       = "\x1b[201~"
-	win32PasteCoalesceWindow     = 5 * time.Millisecond
-	win32PasteBurstWindow        = 40 * time.Millisecond
-	win32PasteBurstRuneThreshold = 2
-	win32PasteRuneThreshold      = 24
-	win32PasteMultilineThreshold = 8
-)
-
 // streamData sends data from the input stream to the event channel.
 func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) error {
 	cc, ok := d.r.(*conInputReader)
@@ -54,16 +44,8 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 				break
 			}
 
-			if d.hasPendingWin32VTText() && time.Now().After(d.win32VTTextDeadline) {
-				d.flushPendingWin32VTText(&buf)
-				if err := sendWin32SerializedInput(ctx, readc, &buf); err != nil {
-					return err
-				}
-				continue
-			}
-
 			// Sleep for a bit to avoid busy waiting.
-			time.Sleep(d.win32InputPollDelay())
+			time.Sleep(10 * time.Millisecond)
 		}
 
 		records, err = readNConsoleInputs(cc.conin, uint32(len(records))) //nolint:gosec
@@ -79,9 +61,13 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 		// Win32-Input-Mode processing.
 		d.serializeWin32InputRecords(records, &buf)
 
-		if err := sendWin32SerializedInput(ctx, readc, &buf); err != nil {
-			return err
+		select {
+		case <-ctx.Done():
+			return nil
+		case readc <- buf.Bytes():
 		}
+
+		buf.Reset()
 	}
 }
 
@@ -91,29 +77,35 @@ func (d *TerminalReader) streamData(ctx context.Context, readc chan []byte) erro
 // terminal as input.
 func (d *TerminalReader) serializeWin32InputRecords(records []xwindows.InputRecord, buf *bytes.Buffer) {
 	for _, record := range records {
-		if d.vtInput && record.EventType != xwindows.KEY_EVENT {
-			d.flushPendingWin32VTText(buf)
-		}
-
 		switch record.EventType {
 		case xwindows.KEY_EVENT:
 			kevent := record.KeyEvent()
 			// d.logf("key event: %s", keyEventString(kevent.VirtualKeyCode, kevent.VirtualScanCode, kevent.Char, kevent.KeyDown, kevent.ControlKeyState, kevent.RepeatCount))
 
+			var kd int
+			if kevent.KeyDown {
+				kd = 1
+			}
 			if d.vtInput {
-				if d.shouldIgnoreWin32VTTextEvent(kevent) {
-					continue
+				// In VT Input Mode, we only capture the Unicode characters
+				// decoding them along the way.
+				// This is similar to [TerminalReader.storeGraphemeRune] except
+				// that we need to write the events directly to the buffer.
+				if d.utf16Half[kd] {
+					// We have a half pair that needs to be decoded.
+					d.utf16Half[kd] = false
+					d.utf16Buf[kd][1] = kevent.Char
+					r := utf16.DecodeRune(d.utf16Buf[kd][0], d.utf16Buf[kd][1])
+					buf.WriteRune(r)
+				} else if utf16.IsSurrogate(kevent.Char) {
+					// This is the first half of a UTF-16 surrogate pair.
+					d.utf16Half[kd] = true
+					d.utf16Buf[kd][0] = kevent.Char
+				} else if kevent.KeyDown {
+					// Just a regular key press character encoded in VT.
+					buf.WriteRune(kevent.Char)
 				}
-				if d.isWin32VTTextEvent(kevent) {
-					d.appendPendingWin32VTTextEvent(kevent)
-					continue
-				}
-				d.flushPendingWin32VTText(buf)
 			} else {
-				var kd int
-				if kevent.KeyDown {
-					kd = 1
-				}
 				// We encode the key to Win32 Input Mode if it is a known key.
 				if kevent.VirtualKeyCode == 0 {
 					d.eventScanner.storeGraphemeRune(kd, kevent.Char)
@@ -209,142 +201,6 @@ func (d *TerminalReader) serializeWin32InputRecords(records []xwindows.InputReco
 
 	// Flush any remaining grapheme buffers.
 	buf.Write(d.eventScanner.encodeGraphemeBufs())
-}
-
-func shouldCoalesceWin32Paste(runeCount int, hasNewline bool) bool {
-	if runeCount >= win32PasteRuneThreshold {
-		return true
-	}
-	return hasNewline && runeCount >= win32PasteMultilineThreshold
-}
-
-func shouldStartWin32PasteBurst(runeCount int, hasNewline bool) bool {
-	if runeCount >= win32PasteBurstRuneThreshold {
-		return true
-	}
-	return hasNewline && runeCount >= 2
-}
-
-func (d *TerminalReader) appendPendingWin32VTTextEvent(kevent xwindows.KeyEventRecord) {
-	d.win32VTTextActive = true
-	window := win32PasteCoalesceWindow
-
-	if d.appendWin32VTTextEvent(kevent, &d.win32VTText) {
-		d.win32VTTextRunes++
-		d.win32VTTextHasNewline = d.win32VTTextHasNewline || kevent.Char == '\r' || kevent.Char == '\n'
-	}
-	if shouldStartWin32PasteBurst(d.win32VTTextRunes, d.win32VTTextHasNewline) {
-		d.win32VTTextBurst = true
-		window = win32PasteBurstWindow
-	} else if d.win32VTTextBurst {
-		window = win32PasteBurstWindow
-	}
-	d.win32VTTextDeadline = time.Now().Add(window)
-}
-
-func (d *TerminalReader) appendWin32VTTextEvent(kevent xwindows.KeyEventRecord, buf *strings.Builder) bool {
-	if d.utf16Half[1] {
-		d.utf16Half[1] = false
-		d.utf16Buf[1][1] = kevent.Char
-		buf.WriteRune(utf16.DecodeRune(d.utf16Buf[1][0], d.utf16Buf[1][1]))
-		return true
-	}
-	if utf16.IsSurrogate(kevent.Char) {
-		d.utf16Half[1] = true
-		d.utf16Buf[1][0] = kevent.Char
-		return false
-	}
-	if !kevent.KeyDown {
-		return false
-	}
-	buf.WriteRune(kevent.Char)
-	return true
-}
-
-func (d *TerminalReader) flushPendingWin32VTText(buf *bytes.Buffer) {
-	if !d.win32VTTextActive {
-		return
-	}
-	if d.utf16Half[1] && d.win32VTText.Len() == 0 {
-		return
-	}
-
-	text := d.win32VTText.String()
-	if d.win32VTTextBurst || shouldCoalesceWin32Paste(d.win32VTTextRunes, d.win32VTTextHasNewline) {
-		buf.WriteString(win32BracketedPasteStart)
-		buf.WriteString(text)
-		buf.WriteString(win32BracketedPasteEnd)
-	} else {
-		buf.WriteString(text)
-	}
-
-	d.win32VTText.Reset()
-	d.win32VTTextActive = false
-	d.win32VTTextBurst = false
-	d.win32VTTextRunes = 0
-	d.win32VTTextHasNewline = false
-}
-
-func (d *TerminalReader) hasPendingWin32VTText() bool {
-	return d.win32VTTextActive
-}
-
-func (d *TerminalReader) win32InputPollDelay() time.Duration {
-	if !d.hasPendingWin32VTText() {
-		return 10 * time.Millisecond
-	}
-
-	remaining := time.Until(d.win32VTTextDeadline)
-	if remaining <= 0 {
-		return 0
-	}
-	if remaining > time.Millisecond {
-		return time.Millisecond
-	}
-	return remaining
-}
-
-func sendWin32SerializedInput(ctx context.Context, readc chan []byte, buf *bytes.Buffer) error {
-	if buf.Len() == 0 {
-		return nil
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil
-	case readc <- buf.Bytes():
-	}
-
-	buf.Reset()
-	return nil
-}
-
-func (d *TerminalReader) isWin32VTTextEvent(kevent xwindows.KeyEventRecord) bool {
-	if d.utf16Half[1] {
-		return true
-	}
-	if !kevent.KeyDown {
-		return false
-	}
-	return kevent.Char != 0
-}
-
-func (d *TerminalReader) shouldIgnoreWin32VTTextEvent(kevent xwindows.KeyEventRecord) bool {
-	if !kevent.KeyDown {
-		return true
-	}
-	if kevent.Char != 0 {
-		return false
-	}
-	switch kevent.VirtualKeyCode {
-	case windows.VK_SHIFT, windows.VK_CONTROL, windows.VK_MENU,
-		windows.VK_LSHIFT, windows.VK_RSHIFT,
-		windows.VK_LCONTROL, windows.VK_RCONTROL,
-		windows.VK_LMENU, windows.VK_RMENU:
-		return true
-	default:
-		return false
-	}
 }
 
 func mouseEventButton(p, s uint32) (MouseButton, bool) {

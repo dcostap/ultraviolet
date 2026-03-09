@@ -67,15 +67,9 @@ type TerminalReader struct {
 
 	// We use these buffers to decode UTF-16 sequences and graphemes from the
 	// Windows Console API and Win32-Input-Mode events.
-	utf16Half             [2]bool    // 0 key up, 1 key down
-	utf16Buf              [2][2]rune // 0 key up, 1 key down
-	graphemeBuf           [2][]rune  // 0 key up, 1 key down
-	win32VTText           strings.Builder
-	win32VTTextActive     bool
-	win32VTTextBurst      bool
-	win32VTTextRunes      int
-	win32VTTextHasNewline bool
-	win32VTTextDeadline   time.Time
+	utf16Half   [2]bool    // 0 key up, 1 key down
+	utf16Buf    [2][2]rune // 0 key up, 1 key down
+	graphemeBuf [2][]rune  // 0 key up, 1 key down
 	//nolint:unused,nolintlint
 	lastMouseBtns uint32 // the last mouse button state for the previous event
 	//nolint:unused,nolintlint
