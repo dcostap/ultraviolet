@@ -21,6 +21,8 @@ const (
 	win32BracketedPasteStart     = "\x1b[200~"
 	win32BracketedPasteEnd       = "\x1b[201~"
 	win32PasteCoalesceWindow     = 5 * time.Millisecond
+	win32PasteBurstWindow        = 40 * time.Millisecond
+	win32PasteBurstRuneThreshold = 4
 	win32PasteRuneThreshold      = 24
 	win32PasteMultilineThreshold = 8
 )
@@ -216,14 +218,28 @@ func shouldCoalesceWin32Paste(runeCount int, hasNewline bool) bool {
 	return hasNewline && runeCount >= win32PasteMultilineThreshold
 }
 
+func shouldStartWin32PasteBurst(runeCount int, hasNewline bool) bool {
+	if runeCount >= win32PasteBurstRuneThreshold {
+		return true
+	}
+	return hasNewline && runeCount >= 2
+}
+
 func (d *TerminalReader) appendPendingWin32VTTextEvent(kevent xwindows.KeyEventRecord) {
 	d.win32VTTextActive = true
-	d.win32VTTextDeadline = time.Now().Add(win32PasteCoalesceWindow)
+	window := win32PasteCoalesceWindow
 
 	if d.appendWin32VTTextEvent(kevent, &d.win32VTText) {
 		d.win32VTTextRunes++
 		d.win32VTTextHasNewline = d.win32VTTextHasNewline || kevent.Char == '\r' || kevent.Char == '\n'
 	}
+	if shouldStartWin32PasteBurst(d.win32VTTextRunes, d.win32VTTextHasNewline) {
+		d.win32VTTextBurst = true
+		window = win32PasteBurstWindow
+	} else if d.win32VTTextBurst {
+		window = win32PasteBurstWindow
+	}
+	d.win32VTTextDeadline = time.Now().Add(window)
 }
 
 func (d *TerminalReader) appendWin32VTTextEvent(kevent xwindows.KeyEventRecord, buf *strings.Builder) bool {
@@ -254,7 +270,7 @@ func (d *TerminalReader) flushPendingWin32VTText(buf *bytes.Buffer) {
 	}
 
 	text := d.win32VTText.String()
-	if shouldCoalesceWin32Paste(d.win32VTTextRunes, d.win32VTTextHasNewline) {
+	if d.win32VTTextBurst || shouldCoalesceWin32Paste(d.win32VTTextRunes, d.win32VTTextHasNewline) {
 		buf.WriteString(win32BracketedPasteStart)
 		buf.WriteString(text)
 		buf.WriteString(win32BracketedPasteEnd)
@@ -264,6 +280,7 @@ func (d *TerminalReader) flushPendingWin32VTText(buf *bytes.Buffer) {
 
 	d.win32VTText.Reset()
 	d.win32VTTextActive = false
+	d.win32VTTextBurst = false
 	d.win32VTTextRunes = 0
 	d.win32VTTextHasNewline = false
 }

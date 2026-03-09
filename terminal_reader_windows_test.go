@@ -42,8 +42,10 @@ func TestSerializeWin32InputRecordsLeavesSmallTextAsKeyPresses(t *testing.T) {
 	drv.vtInput = true
 
 	var buf bytes.Buffer
-	drv.serializeWin32InputRecords(win32TextRecords("hello"), &buf)
-	drv.flushPendingWin32VTText(&buf)
+	for _, record := range win32TextRecords("hello") {
+		drv.serializeWin32InputRecords([]xwindows.InputRecord{record}, &buf)
+		drv.flushPendingWin32VTText(&buf)
+	}
 
 	_, events := drv.eventScanner.scanEvents(buf.Bytes(), true)
 	want := []Event{
@@ -52,6 +54,26 @@ func TestSerializeWin32InputRecordsLeavesSmallTextAsKeyPresses(t *testing.T) {
 		KeyPressEvent{Code: 'l', Text: "l"},
 		KeyPressEvent{Code: 'l', Text: "l"},
 		KeyPressEvent{Code: 'o', Text: "o"},
+	}
+
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("unexpected events:\nwant: %#v\ngot:  %#v", want, events)
+	}
+}
+
+func TestSerializeWin32InputRecordsCoalescesShortRapidBurst(t *testing.T) {
+	drv := NewTerminalReader(bytes.NewReader(nil), "xterm-256color")
+	drv.vtInput = true
+
+	var buf bytes.Buffer
+	drv.serializeWin32InputRecords(win32TextRecords("hello"), &buf)
+	drv.flushPendingWin32VTText(&buf)
+
+	_, events := drv.eventScanner.scanEvents(buf.Bytes(), true)
+	want := []Event{
+		PasteStartEvent{},
+		PasteEvent{"hello"},
+		PasteEndEvent{},
 	}
 
 	if !reflect.DeepEqual(events, want) {

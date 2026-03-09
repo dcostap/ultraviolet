@@ -72,6 +72,7 @@ type TerminalReader struct {
 	graphemeBuf           [2][]rune  // 0 key up, 1 key down
 	win32VTText           strings.Builder
 	win32VTTextActive     bool
+	win32VTTextBurst      bool
 	win32VTTextRunes      int
 	win32VTTextHasNewline bool
 	win32VTTextDeadline   time.Time
