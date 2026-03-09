@@ -22,7 +22,7 @@ const (
 	win32BracketedPasteEnd       = "\x1b[201~"
 	win32PasteCoalesceWindow     = 5 * time.Millisecond
 	win32PasteBurstWindow        = 40 * time.Millisecond
-	win32PasteBurstRuneThreshold = 4
+	win32PasteBurstRuneThreshold = 2
 	win32PasteRuneThreshold      = 24
 	win32PasteMultilineThreshold = 8
 )
